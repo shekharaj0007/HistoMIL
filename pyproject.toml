@@ -7,6 +7,23 @@ name = "histomil"
 version = "0.1.0"
 description = "Attention-MIL classification for gigapixel histopathology WSIs"
 requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.2",
+  "torchvision>=0.17",
+  "numpy>=1.26",
+  "opencv-python>=4.9",
+  "Pillow>=10.2",
+  "matplotlib>=3.8",
+  "tqdm>=4.66",
+  "onnx>=1.16",
+  "onnxruntime>=1.18",
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+  "python-multipart>=0.0.9",
+]
+
+[project.scripts]
+histomil = "histomil.train:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

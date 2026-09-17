@@ -1,44 +1,121 @@
 # HistoMIL
 
-Slide-level **tumor vs normal** classification on gigapixel H&E whole-slide images using gated **Attention Multiple Instance Learning**. No pixel labels required.
+Slide-level **tumor vs normal** classification on gigapixel-style H&E using gated **Attention Multiple Instance Learning**. No pixel labels in the loss.
 
-**GitHub:** [shekharaj0007/HistoMIL](https://github.com/shekharaj0007/HistoMIL)
+A 50,000×50,000 slide is not one tensor. HistoMIL keeps only tissue 256×256 tiles (HSV filter), encodes each tile, and pools with gated attention (Ilse et al.). Attention weights are the tumor localization heatmap.
 
-## Why this exists
+Built for the AIRA-style constraint: high-resolution digital pathology, classification without dense annotation, export path for cloud / low-latency inference.
 
-A 50k×50k slide cannot be classified as one tensor. HistoMIL bags 10k–40k tissue tiles, encodes each with a CNN, and aggregates with gated attention. Attention weights double as a tumor localization heatmap.
+## Pipeline
 
-## Method
+```
+WSI / large H&E
+        │
+        ▼
+ 256×256 tissue tiles  (HSV saturation filter)
+        │
+        ▼
+ compact ResNet-style encoder  (swap-in ResNet-18)
+        │
+        ▼
+ gated attention MIL  →  slide logit
+        │
+        ▼
+ attention heatmap  +  ONNX tile encoder  +  POST /classify
+```
 
-| Piece | Choice |
-|---|---|
-| Encoder | Compact ResNet-style CNN (swap-in ResNet-18) |
-| Pooling | Gated attention MIL (Ilse et al.) |
-| Tiles | 256×256, HSV tissue filter |
-| Task | Slide-level tumor / normal (Camelyon-style bags) |
-| Export | ONNX tile encoder, ~12 ms/tile on RTX 3050 |
+Training never sees the tumor mask. The mask is kept only to check that attention recovers the planted metastasis.
 
-Held-out slides: **AUC 0.91**.
+## Dataset
+
+Camelyon-style bags, generated locally (no 200 GB Camelyon16 download):
+
+- Slide label only: tumor / normal
+- Tumor slides contain a localized dense-nuclei region (metastasis-like)
+- Normal slides are tissue without that island
+- White “glass” background is dropped by the HSV tissue filter
+
+`prepare` writes `train` / `val` / `test` indices. Swap the PNGs for real WSIs later; the rest of the pipeline does not change.
+
+## Metrics
+
+Measured on this machine after `prepare` → `train` → `evaluate` → `export_onnx` (not copied from a paper).
+
+| Split | AUC | Acc | Tile encoder |
+|---|---|---|---|
+| held-out test (9 slides) | **1.00** | **1.00** | **9.4 ms/tile** PyTorch CUDA (RTX 3050) |
+
+ONNX Runtime CPU: 23.3 ms/tile. Attention maps recover the planted metastasis. The tumor mask is **never** used in the loss — only to check localization after training.
+
+![Tumor slide vs gated-attention heatmap](assets/attention_tumor.png)
+
+Default data is **Camelyon-style** (slide label only, localized tumor island), sized so a 4 GB GPU can train. Swap the PNGs for real WSIs; `index.json` stays the same. Chunked encoding is what would carry 10k–40k tiles/slide.
+
+## Setup (Windows, RTX 3050)
+
+```powershell
+cd HistoMIL
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install -e .
+```
+
+CUDA PyTorch (if not already):
+
+```powershell
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+```
+
+## Run
+
+```powershell
+# 1. Camelyon-style bags (slide-level labels only)
+python -m histomil.prepare --out data/processed --n-slides 48 --size 1536
+
+# 2. Train gated Attention-MIL (AMP, cosine LR)
+python -m histomil.train --data data/processed --epochs 20 --max-tiles 32 --out outputs
+
+# 3. Held-out AUC + attention overlays
+python -m histomil.evaluate --data data/processed --ckpt outputs/histomil.pt --split test
+
+# 4. Heatmap on any H&E
+python -m histomil.infer --image data/processed/slides/slide_009.png --ckpt outputs/histomil.pt
+
+# 5. ONNX tile encoder + ms/tile
+python -m histomil.export_onnx --ckpt outputs/histomil.pt --out outputs/tile_encoder.onnx
+
+# 6. Cloud-style endpoint
+python -m histomil.serve --ckpt outputs/histomil.pt
+# POST /classify  (multipart image)
+```
+
+Outputs:
+
+- `outputs/histomil.pt` — best val-AUC checkpoint
+- `outputs/training_curves.png`
+- `outputs/metrics.json` — the honest test number
+- `outputs/roc.png`
+- `outputs/overlays/*_attn.png` — H&E | attention heatmap
+- `outputs/latency.json` — PyTorch / ONNX ms/tile
+
+Optional encoder: `--encoder resnet18` on train / evaluate / export.
 
 ## Layout
 
 ```
 src/histomil/
-  tiling.py        tissue-only WSI tiles
-  model.py         Attention-MIL
+  prepare.py       Camelyon-style slides + bags
+  dataset.py       bag of tiles, slide label only
+  tiling.py        HSV tissue filter, attention remap
+  model.py         residual tile encoder (GroupNorm) + gated attention
+  metrics.py       AUC, accuracy, attention localization
+  viz.py           heatmap overlay
   train.py
+  evaluate.py
+  infer.py
   export_onnx.py
-```
-
-## Run
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-pip install -e .
-python -m histomil.train
-python -m histomil.export_onnx
+  serve.py         FastAPI /classify
 ```
 
 ## Cite

@@ -1,0 +1,6 @@
+{
+  "pytorch_cpu_ms_per_tile": 33.372,
+  "onnx": "outputs\\tile_encoder.onnx",
+  "onnxruntime_cpu_ms_per_tile": 23.347,
+  "pytorch_cuda_ms_per_tile": 9.363
+}
